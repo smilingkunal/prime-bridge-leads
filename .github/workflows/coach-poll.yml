@@ -1,0 +1,52 @@
+name: PBM Coach poll-and-forward
+
+on:
+  schedule:
+    # every 5 min — Telegram long-poll style cadence
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Poll Telegram + forward to VPS relay
+        env:
+          BOT_TOKEN: ${{ secrets.PBM_COACH_BOT_TOKEN }}
+          VPS_RELAY_URL: ${{ secrets.VPS_RELAY_URL }}
+          SHARED_SECRET: ${{ secrets.COACH_RELAY_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BOT_TOKEN" ] || [ -z "$VPS_RELAY_URL" ] || [ -z "$SHARED_SECRET" ]; then
+            echo "::error::missing secrets"
+            exit 1
+          fi
+
+          # getUpdates with long-poll 25s
+          UPDATES=$(curl -sS -m 30 \
+            "https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?timeout=25&allowed_updates=%5B%22message%22%5D")
+          echo "updates preview: $(echo "$UPDATES" | head -c 200)"
+
+          # parse + forward each message
+          echo "$UPDATES" | python3 -c "
+          import json, sys, urllib.request, hmac, hashlib
+          updates = json.loads(sys.stdin.read()).get('result', [])
+          sent = 0
+          for u in updates:
+              msg = u.get('message')
+              if not msg: continue
+              chat = msg.get('chat', {}).get('id')
+              text = msg.get('text', '')
+              mid  = msg.get('message_id')
+              if not chat or not text: continue
+              body = json.dumps({'message': {'chat_id': chat, 'text': text, 'message_id': mid}}).encode()
+              sig  = hmac.new(os.environ['SHARED_SECRET'].encode(), body, hashlib.sha256).hexdigest()
+              req = urllib.request.Request(os.environ['VPS_RELAY_URL'] + '/incoming', data=body, method='POST')
+              req.add_header('Content-Type', 'application/json')
+              req.add_header('X-Relay-Signature', sig)
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  print(f'  -> msg {mid} chat {chat}: {r.status}')
+              sent += 1
+          print(f'forwarded {sent} messages')
+          "
