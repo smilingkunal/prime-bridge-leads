@@ -30,7 +30,7 @@ jobs:
 
           # parse + forward each message
           echo "$UPDATES" | python3 -c "
-          import json, sys, urllib.request, hmac, hashlib
+          import json, sys, urllib.request, hmac, hashlib, os
           updates = json.loads(sys.stdin.read()).get('result', [])
           sent = 0
           for u in updates:
